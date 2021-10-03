@@ -1,0 +1,3 @@
+[submodule "deps/ytdl"]
+	path = deps/ytdl
+	url = https://github.com/Wykerd/libytdl.git
