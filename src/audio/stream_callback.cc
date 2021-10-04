@@ -56,7 +56,7 @@ Status StreamCallback::OnFrame(const FrameMetadata& metadata,
     Status status = reader->Read(*bytes_remaining, buf, &read);
     *bytes_remaining -= read;
     
-    on_packet((char *)buf, read);
+    on_packet(this, (char *)buf, read);
     
     free(buf);
     return status;

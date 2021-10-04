@@ -80,15 +80,18 @@ bool ytplayer::add(uint64_t id, std::string &url)
         ytctx_t *p_ctx = new ytctx_t;
         p_ctx->player = this;
         p_ctx->has_started = false;
+        p_ctx->may_autostart = false;
         p_ctx->packet_count = 0;
         p_ctx->id = id;
-        p_ctx->demuxer.callback.on_packet = [&p_ctx](const char *buf, size_t len) {
+        p_ctx->demuxer.callback.p_ctx = p_ctx;
+        p_ctx->demuxer.callback.on_packet = [](webm::StreamCallback *caller, const char *buf, size_t len) {
+            ytctx_t *p_ctx = (ytctx_t *)caller->p_ctx;
             p_ctx->player->on_audio_packet(p_ctx->id, p_ctx->queue.front(), (uint8_t *)buf, len);
         };
         this->ctx[id] = p_ctx;
     }
 
-    ctx->data = &this->ctx[id];
+    ctx->data = this->ctx[id];
 
     ytdl_dl_get_info (ctx, v_id, [](ytdl_dl_ctx_t* ctx, ytdl_dl_video_t* vid)
     {
@@ -97,6 +100,7 @@ bool ytplayer::add(uint64_t id, std::string &url)
         ytdl_info_extract_video_details(&vid->info);
 
         ytinfo_t info;
+        info.id.assign(vid->id, YTDL_ID_LEN);
         info.title = std::string(vid->info.title);
         info.length_seconds = std::string(vid->info.length_seconds);
         info.channel_id = std::string(vid->info.channel_id);
@@ -104,11 +108,11 @@ bool ytplayer::add(uint64_t id, std::string &url)
         info.average_rating = vid->info.average_rating;
         info.view_count = std::string(vid->info.view_count);
         info.author = std::string(vid->info.author);
-        info.dash_url = std::string(vid->info.dash_manifest_url);
         
         if (vid->info.dash_manifest_url)
         {
             info.is_dash = true;
+            info.dash_url = std::string(vid->info.dash_manifest_url);
 
             info.dl_dash = (ytdl_dl_dash_ctx_t *)malloc(sizeof(ytdl_dl_dash_ctx_t));
 
@@ -136,7 +140,7 @@ bool ytplayer::add(uint64_t id, std::string &url)
                 p_ctx->demuxer.reader = webm::PartialBufferReader();
                 p_ctx->demuxer.parser.DidSeek();
 
-                p_ctx->player->start(p_ctx->id);
+                p_ctx->player->on_dl_complete(p_ctx->id);
 
                 ytdl_dl_dash_shutdown(ctx, [](ytdl_dl_dash_ctx_t *ctx) {
                     free(ctx);
@@ -157,29 +161,21 @@ bool ytplayer::add(uint64_t id, std::string &url)
                 {
                     if (!strcmp((char *)attr->name, "mimeType"))
                     {
+                        if (is_video)
+                            return 1;
+                        
                         xmlChar *mimeType = xmlNodeListGetString(ctx->doc, attr->children, 1);
-                        if (std::string((char *)mimeType).find("opus") != std::string::npos) {
+                        if (std::string((char *)mimeType).find("audio/webm") != std::string::npos) {
                             xmlChar *attr = xmlGetProp(representation, (xmlChar *)"bandwidth");
                             if (!attr) 
                                 return 0; 
                             long long bw = atoll((char *)attr);
                             xmlFree(attr);
-                            if (is_video)
+                            if (bw > ctx->a_bandwidth)
                             {
-                                if (bw > ctx->v_bandwidth)
-                                {
-                                    ctx->v_bandwidth = bw;
-                                    return 1;
-                                };
-                            }
-                            else
-                            {
-                                if (bw > ctx->a_bandwidth)
-                                {
-                                    ctx->a_bandwidth = bw;
-                                    return 1;
-                                };
-                            }
+                                ctx->a_bandwidth = bw;
+                                return 1;
+                            };
                         }
                     }
                 }
@@ -214,7 +210,7 @@ bool ytplayer::add(uint64_t id, std::string &url)
                 p_ctx->demuxer.reader = webm::PartialBufferReader();
                 p_ctx->demuxer.parser.DidSeek();
 
-                p_ctx->player->start(p_ctx->id);
+                p_ctx->player->on_dl_complete(p_ctx->id);
 
                 ytdl_dl_media_shutdown(ctx, [](ytdl_dl_media_ctx_t *ctx) {
                     free(ctx);
@@ -238,9 +234,6 @@ bool ytplayer::add(uint64_t id, std::string &url)
 
         p_ctx->queue.push(info);
 
-        if (p_ctx->has_started && (p_ctx->queue.size() == 0))
-            p_ctx->player->start(p_ctx->id);
-
         if (p_ctx->player->on_info)
             p_ctx->player->on_info(p_ctx->id, info);
 
@@ -256,6 +249,14 @@ void ytplayer::start(uint64_t id) {
     if (this->ctx.find(id) != this->ctx.end()) {
         if (ctx[id]->has_started) 
             return;
+
+        ctx[id]->may_autostart = true;
+
+        if (ctx[id]->queue.size() == 0)
+            return;
+
+        auto &fuck = ctx[id]->queue.front();
+        
         if (ctx[id]->queue.front().is_dash)
             ytdl_dl_dash_ctx_connect(ctx[id]->queue.front().dl_dash, ctx[id]->queue.front().dash_url.c_str());
         else

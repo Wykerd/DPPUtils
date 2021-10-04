@@ -15,7 +15,8 @@ namespace webm {
 
 class StreamCallback : public Callback {
     public:
-        std::function<void (const char *buf, size_t len)> on_packet;
+        std::function<void (StreamCallback *caller, const char *buf, size_t len)> on_packet;
+        void *p_ctx;
 
         uint64_t cluster_timecode;
         
@@ -41,6 +42,7 @@ class StreamCallback : public Callback {
 namespace dpputils {
 
 struct ytinfo_t {
+    std::string id;
     std::string title;
     std::string length_seconds;
     std::string channel_id;
@@ -76,6 +78,7 @@ class ytplayer {
 
         // size_t min_packets; // XXX not yet used in implementation
         std::function<void (uint64_t id, const ytinfo_t &info)> on_info;
+        std::function<void (uint64_t id)> on_dl_complete;
         std::function<void (uint64_t id, const ytinfo_t &info, uint8_t *packet, size_t len)> on_audio_packet;
 };
 
@@ -92,6 +95,7 @@ struct ytctx_t {
     ytdemux_t demuxer;
     std::queue<ytinfo_t> queue;
     bool has_started;
+    bool may_autostart;
 };
 
 }
