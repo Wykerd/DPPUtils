@@ -52,4 +52,17 @@ if(NOT libdpp_POPULATED)
     target_link_libraries(test PUBLIC dpp)
 endif()
 
-target_link_libraries(test PUBLIC dpputils-ytplayer)
+add_library(dpputils-songinfo
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/api/songinfo.cc
+)
+
+target_include_directories(dpputils-songinfo PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${libdpp_SOURCE_DIR}/include
+)
+
+target_link_libraries(dpputils-songinfo PUBLIC
+    dpp
+)
+
+target_link_libraries(test PUBLIC dpputils-ytplayer dpputils-songinfo)

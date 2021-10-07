@@ -16,8 +16,7 @@ Status StreamCallback::OnTrackEntry(const ElementMetadata& metadata,
     if (track_entry.track_type.value() == webm::TrackType::kAudio)
     {
         webm::Audio audio = track_entry.audio.value();
-        if ((audio.channels.value() == 2) && 
-            (audio.sampling_frequency.value() == 48000) &&
+        if ((audio.sampling_frequency.value() == 48000) &&
             (track_entry.codec_id.value() == "A_OPUS"))
             return Status(Status::kOkCompleted);
         else

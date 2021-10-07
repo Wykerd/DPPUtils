@@ -72,6 +72,7 @@ class ytplayer {
         std::queue<ytinfo_t> &get_queue(uint64_t id);
 
         bool add(uint64_t id, std::string &url);
+        void addId(uint64_t id, const char *videoId);
         void start(uint64_t id);
         // void end(uint64_t id);
         // void progress(uint64_t id);

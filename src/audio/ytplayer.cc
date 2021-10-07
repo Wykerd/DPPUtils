@@ -61,12 +61,8 @@ std::queue<ytinfo_t> &ytplayer::get_queue(uint64_t id)
     return ctx[id]->queue;
 }
 
-bool ytplayer::add(uint64_t id, std::string &url)
+void ytplayer::addId(uint64_t id, const char *videoId) 
 {
-    char v_id[YTDL_ID_LEN];
-    if (ytdl_net_get_id_from_url(url.c_str(), url.length(), v_id))
-        return false;
-
     ytdl_dl_ctx_t *ctx = (ytdl_dl_ctx_t *)malloc(sizeof(ytdl_dl_ctx_t));
     ytdl_dl_ctx_init(loop, ctx);
 
@@ -93,7 +89,7 @@ bool ytplayer::add(uint64_t id, std::string &url)
 
     ctx->data = this->ctx[id];
 
-    ytdl_dl_get_info (ctx, v_id, [](ytdl_dl_ctx_t* ctx, ytdl_dl_video_t* vid)
+    ytdl_dl_get_info (ctx, videoId, [](ytdl_dl_ctx_t* ctx, ytdl_dl_video_t* vid)
     {
         ytctx_t *p_ctx = (ytctx_t *)ctx->data;
         ytdl_info_extract_formats(&vid->info);
@@ -241,6 +237,15 @@ bool ytplayer::add(uint64_t id, std::string &url)
     }); 
 
     ytdl_dl_ctx_connect(ctx);
+}
+
+bool ytplayer::add(uint64_t id, std::string &url)
+{
+    char v_id[YTDL_ID_LEN];
+    if (ytdl_net_get_id_from_url(url.c_str(), url.length(), v_id))
+        return false;
+
+    addId(id, v_id);
 
     return true;
 }

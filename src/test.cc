@@ -3,10 +3,91 @@
 #include <dpp/nlohmann/json.hpp>
 #include <dpp/fmt/format.h>
 
+#include <dpputils/api/songinfo.h>
+
 struct botctx_t {
     dpp::cluster *cluster;
     dpputils::ytplayer *player;
 };
+
+static 
+bool setup_voice (dpp::cluster &bot, std::unordered_map<uint64_t, uint64_t> &channelMap, 
+                  dpp::snowflake guild_id, dpp::snowflake user_id, 
+                  dpp::snowflake channel_id, const std::string &token)
+{
+    /**
+     * Connect to the user's vc
+     */
+    dpp::guild *g = dpp::find_guild(guild_id);
+    if (!g->connect_member_voice(user_id)) {
+        bot.interaction_response_edit(token, 
+            dpp::message()
+                .add_embed(dpp::embed()
+                    .set_color(0x000000)
+                    .set_description("You're not connected to a voice channel!")
+                )
+        );
+        return false;
+    }
+
+    /**
+     * Store the channels to send additional messages
+     */
+    channelMap[guild_id] = channel_id;
+
+    return true;
+}
+
+static 
+void play_direct_youtube (dpp::cluster &bot, dpputils::ytplayer &player, 
+                          const std::string &query, bool is_id,
+                          std::unordered_map<uint64_t, uint64_t> &channelMap, 
+                          dpp::snowflake guild_id, dpp::snowflake user_id, 
+                          dpp::snowflake channel_id, const std::string &token)
+{
+
+    if (!setup_voice(bot, channelMap, guild_id, user_id, channel_id, token))
+        return;
+
+    std::string video_id;
+    if (is_id)
+    {
+        video_id = query;
+        player.addId(guild_id, query.c_str());
+    }
+    else
+    {
+        char id[YTDL_ID_LEN];
+        if (ytdl_net_get_id_from_url(query.c_str(), query.length(), id))
+        {
+            bot.interaction_response_edit(token, 
+                dpp::message()
+                    .add_embed(dpp::embed()
+                        .set_color(0x000000)
+                        .set_title("Invalid Youtube URL")
+                    )
+            );
+            return;
+        }
+        else
+        {
+            video_id.assign(id, YTDL_ID_LEN);
+            player.addId(guild_id, id);
+        }
+    }
+
+    bot.interaction_response_edit(token, 
+        dpp::message()
+            .add_embed(dpp::embed()
+                .set_color(0x000000)
+                .set_title("Requested Song")
+                .add_field(
+                    "Direct from YouTube", 
+                    fmt::format("with id=[{}](https://www.youtube.com/watch?v={})", 
+                        video_id, video_id))
+            )
+    );
+}
 
 int main(int argc, char const *argv[])
 {
@@ -69,37 +150,50 @@ int main(int argc, char const *argv[])
                 dpp::command_interaction cmd_data = std::get<dpp::command_interaction>(event.command.data);
                 if (cmd_data.name == "play")
                 {
-                    std::string url = std::get<std::string>(event.get_parameter("url"));
+                    std::string query = std::get<std::string>(event.get_parameter("url"));
 
-                    /**
-                     * Connect to the user's vc
-                     */
-                    dpp::guild *g = dpp::find_guild(event.command.guild_id);
-                    if (!g->connect_member_voice(event.command.usr.id)) {
-                        event.reply(dpp::ir_channel_message_with_source, 
-                            dpp::message()
-                                .add_embed(dpp::embed()
-                                    .set_color(0x000000)
-                                    .set_description("You're not connected to a voice channel!")
-                                )
-                        );
-                        return;
+                    event.reply(dpp::ir_deferred_channel_message_with_source, "");
+
+                    if (query.rfind("https://", 0) == std::string::npos)
+                    {
+                        auto guild_id = event.command.guild_id;
+                        auto channel_id = event.command.channel_id;
+                        auto token = event.command.token;
+                        auto user_id = event.command.usr.id;
+                        dpputils::get_song_info(bot, query, 
+                            [guild_id, channel_id, token, user_id, &player, &bot, &channelMap]
+                            (const dpputils::songinfo_t *info) {
+                                if (info->track.length() == 0)
+                                {
+                                    play_direct_youtube(bot, player, info->youtube_candidates.front(), true, channelMap, 
+                                        guild_id, user_id, channel_id, token);
+                                    return;
+                                }
+                                else
+                                {
+                                    if (!setup_voice(bot, channelMap, guild_id, user_id, channel_id, token))
+                                        return;
+
+                                    player.addId(guild_id, info->youtube_candidates.front().c_str());
+
+                                    dpp::message msg;
+                                    msg.channel_id = channel_id;
+                                    msg.add_embed(dpp::embed()
+                                        .set_color(0x000000)
+                                        .set_thumbnail(info->cover_art_url)
+                                        .set_title("Requested Song")
+                                        .add_field(
+                                            info->track, 
+                                            fmt::format("by [{}]({}) on [{}]({})", 
+                                                info->artist, info->artist_apple_music_url, 
+                                                info->collection, info->collection_apple_music_url)));
+                                    bot.interaction_response_edit(token, msg);
+                                }
+                            });
                     }
-
-                    /**
-                     * Store the channels to send additional messages
-                     */
-                    channelMap[event.command.guild_id] = event.command.channel_id;
-
-                    /**
-                     * Add the video to the player queue
-                     */
-                    player.add(event.command.guild_id, url);
-
-                    /**
-                     * Acknowledge the slash command
-                     */
-                    event.reply(dpp::ir_channel_message_with_source, "Requested song");
+                    else 
+                        play_direct_youtube(bot, player, query, false, channelMap, 
+                            event.command.guild_id, event.command.usr.id, event.command.channel_id, event.command.token);
                 }
             }
         });
@@ -109,15 +203,13 @@ int main(int argc, char const *argv[])
              * Once the voice connection is ready we tell ytplayer to start downloading the 
              * media and emit packets to stream
              */
-            event.voice_client->send_silence(5);
-
             vcMap[event.voice_client->server_id] = event.voice_client;
             
             /* This will trigger the on_voice_track_marker which starts the next (in this case first) song */
             vcMap[event.voice_client->server_id]->insert_marker("");
         });
 
-        bot.on_ready([](const dpp::ready_t & event) {
+        bot.on_ready([&bot](const dpp::ready_t & event) {
             std::cout << "Bot is ready\n";
         });
 
@@ -129,13 +221,24 @@ int main(int argc, char const *argv[])
              */
             auto &queue = player.get_queue(event.voice_client->server_id);
 
+            dpp::message msg;
+            msg.channel_id = channelMap[event.voice_client->server_id];
+
             if (queue.size() == 0)
+            {
+                dpp::guild *g = dpp::find_guild(event.voice_client->server_id);
+                bot.get_shard(g->shard_id)->disconnect_voice(g->id);
+                msg.add_embed(dpp::embed()
+                    .set_color(0x000000)
+                    .set_title("Bye")
+                    .set_description("Queue is empty")
+                );
+                bot.message_create(msg);
                 return;
+            }
 
             auto &info = queue.front();
 
-            dpp::message msg;
-            msg.channel_id = channelMap[event.voice_client->server_id];
             msg.add_embed(dpp::embed()
                 .set_color(0x000000)
                 .set_description(fmt::format("Now Playing [{}](https://www.youtube.com/watch?v={}) by [{}](https://www.youtube.com/channel/{})", 
