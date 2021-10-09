@@ -24,6 +24,9 @@ void play_command(const dpp::interaction_create_t &event, dpputils::ytplayer &pl
 void queue_command(const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
 				   id_map_t &channelMap, vc_map_t &vcMap);
 
+void skip_command(const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
+				   id_map_t &channelMap, vc_map_t &vcMap);
+
 static
 bool setup_voice(dpp::cluster &bot, std::unordered_map<uint64_t, uint64_t> &channelMap,
 				 dpp::snowflake guild_id, dpp::snowflake user_id,
@@ -115,8 +118,9 @@ int main() {
 	vc_map_t vcMap;
 
 	std::unordered_map<std::string, command_handler_t> handlers = {
-		{ "play",  play_command },
-		{ "queue", queue_command }
+		{ "play",	play_command	},
+		{ "queue",	queue_command	},
+		{ "skip",	skip_command	}
 	};
 
 	botctx_t botctx{};
@@ -146,7 +150,22 @@ int main() {
 			.set_description("Streams a song to your current voice channel")
 			.set_application_id(bot.me.id)
 			.add_option(
-				dpp::command_option(dpp::co_string, "query", "Youtube link or song name", true)
+				dpp::command_option(dpp::co_sub_command, "song", "Search for and play a song", false)
+					.add_option(
+							dpp::command_option(dpp::co_string, "name", "Song name", true)
+					)
+			)
+			.add_option(
+				dpp::command_option(dpp::co_sub_command, "album", "Search for and enqueue a whole album", false)
+					.add_option(
+						dpp::command_option(dpp::co_string, "name", "Album name", true)
+					)
+			)
+			.add_option(
+				dpp::command_option(dpp::co_sub_command, "link", "Play a song from youtube link", false)
+					.add_option(
+						dpp::command_option(dpp::co_string, "url", "Any YouTube video link", true)
+					)
 			);
 
 		dpp::slashcommand queuecommand;
@@ -249,6 +268,42 @@ int main() {
 	return 0;
 }
 
+void skip_command(const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
+				  id_map_t &channelMap, vc_map_t &vcMap) {
+	dpp::snowflake guild_id = event.command.guild_id;
+	if (vcMap.find(guild_id) == vcMap.end())
+		return event.reply(
+			dpp::ir_channel_message_with_source,
+			dpp::message()
+				.add_embed(
+					dpp::embed()
+						.set_color(0x000000)
+						.set_description("I'm not playing anything.")
+				)
+		);
+
+	player.stop(guild_id);
+	// Flush out the voice packet buffer
+	vcMap[guild_id]->insert_marker("skip");
+	while (vcMap[guild_id]->get_tracks_remaining())
+		vcMap[guild_id]->skip_to_next_marker();
+
+	// Start playing the next track
+	vcMap[guild_id]->insert_marker("autoplay");
+
+	auto *queue = player.get_queue(guild_id);
+
+	event.reply(
+		dpp::ir_channel_message_with_source,
+		dpp::message()
+			.add_embed(
+				dpp::embed()
+					.set_color(0x000000)
+					.set_description(!queue || queue->empty() ? "Nothing left to play." : "Skipped to next song.")
+			)
+	);
+};
+
 void queue_command(const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
 				   id_map_t &channelMap, vc_map_t &vcMap) {
 	auto *queue = player.get_queue(event.command.guild_id);
@@ -291,52 +346,87 @@ void queue_command(const dpp::interaction_create_t &event, dpputils::ytplayer &p
 
 void play_command(const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
 				  id_map_t &channelMap, vc_map_t &vcMap) {
-	std::string query = std::get<std::string>(event.get_parameter("query"));
+	dpp::command_interaction cmd_data = std::get<dpp::command_interaction>(event.command.data);
+
+	dpp::command_data_option option = cmd_data.options.front();
 
 	event.reply(dpp::ir_deferred_channel_message_with_source, "");
 
-	if (query.rfind("https://", 0) == std::string::npos) {
-		auto guild_id = event.command.guild_id;
-		auto channel_id = event.command.channel_id;
-		auto token = event.command.token;
-		auto user_id = event.command.usr.id;
-		dpputils::get_song_info(
-			bot, query,
-			[guild_id, channel_id, token, user_id, &player, &bot, &channelMap]
-			(const dpputils::songinfo_t *info) {
-				if (info->track.length() == 0) {
-					play_direct_youtube(bot, player, info->youtube_candidates.front(), true,
-										channelMap, guild_id, user_id, channel_id, token);
-					return;
-				} else {
-					if (!setup_voice(bot, channelMap, guild_id, user_id, channel_id, token))
-						return;
+	static std::unordered_map<std::string, command_handler_t> handlers = {
+		{
+			"song",
+			[&option](const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
+			   id_map_t &channelMap, vc_map_t &vcMap) {
+				std::string query = std::get<std::string>(option.options.front().value);
+				auto guild_id = event.command.guild_id;
+				auto channel_id = event.command.channel_id;
+				auto token = event.command.token;
+				auto user_id = event.command.usr.id;
+				dpputils::get_song_info(
+					bot, query,
+					[guild_id, channel_id, token, user_id, &player, &bot, &channelMap]
+							(const dpputils::songinfo_t *info) {
+						if (info->track.length() == 0) {
+							play_direct_youtube(bot, player, info->youtube_candidates.front(), true,
+												channelMap, guild_id, user_id, channel_id, token);
+							return;
+						} else {
+							if (!setup_voice(bot, channelMap, guild_id, user_id, channel_id, token))
+								return;
 
-					player.addId(guild_id, info->youtube_candidates.front().c_str());
+							player.addId(guild_id, info->youtube_candidates.front().c_str());
 
-					dpp::message msg;
-					msg.channel_id = channel_id;
-					msg.add_embed(
-						dpp::embed()
-							.set_color(0x000000)
-							.set_thumbnail(info->cover_art_url)
-							.set_title("Requested Song")
-							.add_field(
-								info->track,
-								fmt::format(
-									"by [{}]({}) on [{}]({})",
-									info->artist,
-									info->artist_apple_music_url,
-									info->collection,
-									info->collection_apple_music_url
-								)
-							)
-					);
-					bot.interaction_response_edit(token, msg);
-				}
-			});
-	} else
-		play_direct_youtube(bot, player, query, false, channelMap,
-							event.command.guild_id, event.command.usr.id, event.command.channel_id,
-							event.command.token);
+							dpp::message msg;
+							msg.channel_id = channel_id;
+							msg.add_embed(
+								dpp::embed()
+									.set_color(0x000000)
+									.set_thumbnail(info->cover_art_url)
+									.set_title("Requested Song")
+									.add_field(
+										info->track,
+										fmt::format(
+											"by [{}]({}) on [{}]({})",
+											info->artist,
+											info->artist_apple_music_url,
+											info->collection,
+											info->collection_apple_music_url
+										)
+									)
+							);
+							bot.interaction_response_edit(token, msg);
+						}
+					});
+			}
+		},
+		{
+			"link",
+			[&option](const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
+					  id_map_t &channelMap, vc_map_t &vcMap) {
+				std::string query = std::get<std::string>(option.options.front().value);
+				play_direct_youtube(bot, player, query, false, channelMap,
+									event.command.guild_id, event.command.usr.id, event.command.channel_id,
+									event.command.token);
+			}
+		},
+		{
+			"album",
+			[&option](const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
+					  id_map_t &channelMap, vc_map_t &vcMap) {
+				std::string query = std::get<std::string>(option.options.front().value);
+				event.edit_response(
+					dpp::message()
+						.add_embed(
+							dpp::embed()
+								.set_color(0x000000)
+								.set_title("Album")
+								.set_description("Not yet implemented")
+						)
+				);
+			}
+		}
+	};
+
+	if (handlers.find(option.name) != handlers.end())
+		handlers[option.name](event, player, bot, channelMap, vcMap);
 }
