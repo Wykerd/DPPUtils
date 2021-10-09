@@ -42,8 +42,8 @@ string urlencode(string &s)
             v.push_back('%');
             unsigned char d1, d2;
             hexchar(c, d1, d2);
-            v.push_back(d1);
-            v.push_back(d2);
+            v.push_back((char)d1);
+            v.push_back((char)d2);
         }
     }
 

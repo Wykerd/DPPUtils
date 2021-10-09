@@ -67,14 +67,15 @@ class ytplayer {
         uv_loop_t *loop;
         std::unordered_map<uint64_t, ytctx_t *> ctx;
     public:
-        ytplayer(uv_loop_t *loop);
+        explicit ytplayer(uv_loop_t *loop);
         uv_loop_t *get_loop();
-        std::queue<ytinfo_t> &get_queue(uint64_t id);
+        std::deque<ytinfo_t> *get_queue(uint64_t id);
 
         bool add(uint64_t id, std::string &url);
         void addId(uint64_t id, const char *videoId);
         void start(uint64_t id);
-        // void end(uint64_t id);
+        void end(uint64_t id);
+		void stop(uint64_t id);
         // void progress(uint64_t id);
 
         // size_t min_packets; // XXX not yet used in implementation
@@ -94,7 +95,7 @@ struct ytctx_t {
     uint64_t id;
     size_t packet_count;
     ytdemux_t demuxer;
-    std::queue<ytinfo_t> queue;
+    std::deque<ytinfo_t> queue;
     bool has_started;
     bool may_autostart;
 };

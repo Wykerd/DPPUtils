@@ -56,24 +56,26 @@ uv_loop_t *ytplayer::get_loop()
     return this->loop;
 };
 
-std::queue<ytinfo_t> &ytplayer::get_queue(uint64_t id)
+std::deque<ytinfo_t> *ytplayer::get_queue(uint64_t id)
 {
-    return ctx[id]->queue;
+    if (ctx.find(id) != ctx.end())
+        return &ctx[id]->queue;
+    return nullptr;
 }
 
 void ytplayer::addId(uint64_t id, const char *videoId) 
 {
-    ytdl_dl_ctx_t *ctx = (ytdl_dl_ctx_t *)malloc(sizeof(ytdl_dl_ctx_t));
-    ytdl_dl_ctx_init(loop, ctx);
+    auto *dl_ctx = (ytdl_dl_ctx_t *)malloc(sizeof(ytdl_dl_ctx_t));
+    ytdl_dl_ctx_init(loop, dl_ctx);
 
-    ctx->on_close = [](ytdl_dl_ctx_t *ctx)
+    dl_ctx->on_close = [](ytdl_dl_ctx_t *ctx)
     {
         free(ctx);
     };
 
     if (this->ctx.find(id) == this->ctx.end())
     {
-        ytctx_t *p_ctx = new ytctx_t;
+        auto *p_ctx = new ytctx_t;
         p_ctx->player = this;
         p_ctx->has_started = false;
         p_ctx->may_autostart = false;
@@ -81,17 +83,17 @@ void ytplayer::addId(uint64_t id, const char *videoId)
         p_ctx->id = id;
         p_ctx->demuxer.callback.p_ctx = p_ctx;
         p_ctx->demuxer.callback.on_packet = [](webm::StreamCallback *caller, const char *buf, size_t len) {
-            ytctx_t *p_ctx = (ytctx_t *)caller->p_ctx;
+            auto *p_ctx = (ytctx_t *)caller->p_ctx;
             p_ctx->player->on_audio_packet(p_ctx->id, p_ctx->queue.front(), (uint8_t *)buf, len);
         };
         this->ctx[id] = p_ctx;
     }
 
-    ctx->data = this->ctx[id];
+    dl_ctx->data = this->ctx[id];
 
-    ytdl_dl_get_info (ctx, videoId, [](ytdl_dl_ctx_t* ctx, ytdl_dl_video_t* vid)
+    ytdl_dl_get_info (dl_ctx, videoId, [](ytdl_dl_ctx_t* ctx, ytdl_dl_video_t* vid)
     {
-        ytctx_t *p_ctx = (ytctx_t *)ctx->data;
+        auto *p_ctx = (ytctx_t *)ctx->data;
         ytdl_info_extract_formats(&vid->info);
         ytdl_info_extract_video_details(&vid->info);
 
@@ -117,7 +119,7 @@ void ytplayer::addId(uint64_t id, const char *videoId)
             info.dl_dash->data = ctx->data;
 
             info.dl_dash->on_data = [](ytdl_dl_dash_ctx_t *ctx, const char *buf, size_t len) {
-                ytctx_t *p_ctx = (ytctx_t *)ctx->data;
+                auto *p_ctx = (ytctx_t *)ctx->data;
 
                 p_ctx->demuxer.reader.PushChunk((uint8_t *)buf, len);
                 webm::Status status = p_ctx->demuxer.parser.Feed(&p_ctx->demuxer.callback, &p_ctx->demuxer.reader);
@@ -129,9 +131,9 @@ void ytplayer::addId(uint64_t id, const char *videoId)
             };
 
             info.dl_dash->on_complete = [](ytdl_dl_dash_ctx_t *ctx) {
-                ytctx_t *p_ctx = (ytctx_t *)ctx->data;
+                auto *p_ctx = (ytctx_t *)ctx->data;
 
-                p_ctx->queue.pop();
+                p_ctx->queue.pop_front();
                 p_ctx->has_started = false;
                 p_ctx->demuxer.reader = webm::PartialBufferReader();
                 p_ctx->demuxer.parser.DidSeek();
@@ -162,16 +164,16 @@ void ytplayer::addId(uint64_t id, const char *videoId)
                         
                         xmlChar *mimeType = xmlNodeListGetString(ctx->doc, attr->children, 1);
                         if (std::string((char *)mimeType).find("audio/webm") != std::string::npos) {
-                            xmlChar *attr = xmlGetProp(representation, (xmlChar *)"bandwidth");
-                            if (!attr) 
+                            xmlChar *attr_bandwidth = xmlGetProp(representation, (xmlChar *)"bandwidth");
+                            if (!attr_bandwidth)
                                 return 0; 
-                            long long bw = atoll((char *)attr);
-                            xmlFree(attr);
+                            long long bw = atoll((char *)attr_bandwidth);
+                            xmlFree(attr_bandwidth);
                             if (bw > ctx->a_bandwidth)
                             {
                                 ctx->a_bandwidth = bw;
                                 return 1;
-                            };
+                            }
                         }
                     }
                 }
@@ -192,16 +194,16 @@ void ytplayer::addId(uint64_t id, const char *videoId)
             {
                 fputs("[error] out of memory", stderr);
                 exit(EXIT_FAILURE); // TODO: clean exit
-            };
+            }
 
             ytdl_dl_media_ctx_init(p_ctx->player->get_loop(), info.dl_chunked, aud_fmt, &vid->info);
 
             info.dl_chunked->data = ctx->data;
 
             info.dl_chunked->on_complete = [](ytdl_dl_media_ctx_t *ctx) {
-                ytctx_t *p_ctx = (ytctx_t *)ctx->data;
+                auto *p_ctx = (ytctx_t *)ctx->data;
 
-                p_ctx->queue.pop();
+                p_ctx->queue.pop_front();
                 p_ctx->has_started = false;
                 p_ctx->demuxer.reader = webm::PartialBufferReader();
                 p_ctx->demuxer.parser.DidSeek();
@@ -214,7 +216,7 @@ void ytplayer::addId(uint64_t id, const char *videoId)
             };
 
             info.dl_chunked->on_data = [](ytdl_dl_media_ctx_t *ctx, const char *buf, size_t len) {
-                ytctx_t *p_ctx = (ytctx_t *)ctx->data;
+                auto *p_ctx = (ytctx_t *)ctx->data;
 
                 p_ctx->demuxer.reader.PushChunk((uint8_t *)buf, len);
                 webm::Status status = p_ctx->demuxer.parser.Feed(&p_ctx->demuxer.callback, &p_ctx->demuxer.reader);
@@ -228,7 +230,7 @@ void ytplayer::addId(uint64_t id, const char *videoId)
             // ytdl_dl_media_ctx_connect(info.dl_chunked);
         }
 
-        p_ctx->queue.push(info);
+        p_ctx->queue.push_back(info);
 
         if (p_ctx->player->on_info)
             p_ctx->player->on_info(p_ctx->id, info);
@@ -236,7 +238,7 @@ void ytplayer::addId(uint64_t id, const char *videoId)
         ytdl_dl_shutdown(ctx);
     }); 
 
-    ytdl_dl_ctx_connect(ctx);
+    ytdl_dl_ctx_connect(dl_ctx);
 }
 
 bool ytplayer::add(uint64_t id, std::string &url)
@@ -250,6 +252,41 @@ bool ytplayer::add(uint64_t id, std::string &url)
     return true;
 }
 
+void ytplayer::stop(uint64_t id)
+{
+	if (this->ctx.find(id) != this->ctx.end())
+		return;
+
+	if (ctx[id]->has_started)
+	{
+		auto &info = ctx[id]->queue.front();
+		if (info.is_dash)
+			ytdl_dl_dash_shutdown(info.dl_dash, [](ytdl_dl_dash_ctx_t *handle){
+				free(handle);
+			});
+		else
+			ytdl_dl_media_shutdown(info.dl_chunked, [](ytdl_dl_media_ctx_t *handle){
+				free(handle);
+			});
+
+		ctx[id]->queue.pop_front();
+		ctx[id]->has_started = false;
+	}
+}
+
+void ytplayer::end(uint64_t id)
+{
+	if (this->ctx.find(id) != this->ctx.end())
+		return;
+
+	stop(id);
+
+	for (auto & item : ctx[id]->queue)
+		free(item.dl_dash);
+
+	ctx.erase(id);
+}
+
 void ytplayer::start(uint64_t id) {
     if (this->ctx.find(id) != this->ctx.end()) {
         if (ctx[id]->has_started) 
@@ -257,7 +294,7 @@ void ytplayer::start(uint64_t id) {
 
         ctx[id]->may_autostart = true;
 
-        if (ctx[id]->queue.size() == 0)
+        if (ctx[id]->queue.empty())
             return;
 
         auto &fuck = ctx[id]->queue.front();

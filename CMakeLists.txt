@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.10)
 
 project(dpputils LANGUAGES CXX VERSION 0.1.0)
 
@@ -37,7 +37,7 @@ include(FetchContent)
 FetchContent_Declare(
         libdpp
         GIT_REPOSITORY https://github.com/brainboxdotcc/DPP.git
-        GIT_TAG d8e8ad6be1905c5859cedfb0972ce5f6ed5fbd33)
+        GIT_TAG 794f1c701f5222d0afe614e6ae20d7c463822fda)
 
 FetchContent_GetProperties(libdpp)
 if(NOT libdpp_POPULATED)
