@@ -48,7 +48,7 @@ namespace dpputils {
 ytplayer::ytplayer(uv_loop_t *loop)
 {
     this->loop = loop;
-    // this->min_packets = 500; // 10 seconds
+    // this->min_packets = 100; // 1 seconds
 };
 
 uv_loop_t *ytplayer::get_loop()
@@ -78,8 +78,9 @@ void ytplayer::addId(uint64_t id, const char *videoId)
         auto *p_ctx = new ytctx_t;
         p_ctx->player = this;
         p_ctx->has_started = false;
+		p_ctx->chunk_downloading = false;
+		p_ctx->segment_count = 0;
         p_ctx->may_autostart = false;
-        p_ctx->packet_count = 0;
         p_ctx->id = id;
         p_ctx->demuxer.callback.p_ctx = p_ctx;
         p_ctx->demuxer.callback.on_packet = [](webm::StreamCallback *caller, const char *buf, size_t len) {
@@ -117,6 +118,7 @@ void ytplayer::addId(uint64_t id, const char *videoId)
             ytdl_dl_dash_ctx_init(p_ctx->player->get_loop(), info.dl_dash);
 
             info.dl_dash->data = ctx->data;
+			info.dl_dash->pause_between_chunks = 1;
 
             info.dl_dash->on_data = [](ytdl_dl_dash_ctx_t *ctx, const char *buf, size_t len) {
                 auto *p_ctx = (ytctx_t *)ctx->data;
@@ -127,8 +129,20 @@ void ytplayer::addId(uint64_t id, const char *videoId)
                 {
                     // TODO: add on_error for handling these
                     std::cerr << "Parsing error; status code: " << status.code << '\n';
+					ctx->on_complete(ctx);
                 }
             };
+
+			info.dl_dash->on_segment_complete = [](ytdl_dl_dash_ctx_t *ctx) {
+				auto *p_ctx = (ytctx_t *)ctx->data;
+
+				p_ctx->chunk_downloading = false;
+				p_ctx->segment_count++;
+				if (p_ctx->segment_count == 1) { // there's usually no packets in the first chunk only the header
+					p_ctx->chunk_downloading = true;
+					ytdl_dl_dash_ctx_next_chunk(ctx);
+				}
+			};
 
             info.dl_dash->on_complete = [](ytdl_dl_dash_ctx_t *ctx) {
                 auto *p_ctx = (ytctx_t *)ctx->data;
@@ -199,6 +213,7 @@ void ytplayer::addId(uint64_t id, const char *videoId)
             ytdl_dl_media_ctx_init(p_ctx->player->get_loop(), info.dl_chunked, aud_fmt, &vid->info);
 
             info.dl_chunked->data = ctx->data;
+			info.dl_chunked->pause_between_chunks = 1;
 
             info.dl_chunked->on_complete = [](ytdl_dl_media_ctx_t *ctx) {
                 auto *p_ctx = (ytctx_t *)ctx->data;
@@ -215,6 +230,12 @@ void ytplayer::addId(uint64_t id, const char *videoId)
                 });
             };
 
+			info.dl_chunked->on_chunk_complete = [](ytdl_dl_media_ctx_t *ctx) {
+				auto *p_ctx = (ytctx_t *)ctx->data;
+
+				p_ctx->chunk_downloading = false;
+			};
+
             info.dl_chunked->on_data = [](ytdl_dl_media_ctx_t *ctx, const char *buf, size_t len) {
                 auto *p_ctx = (ytctx_t *)ctx->data;
 
@@ -224,6 +245,7 @@ void ytplayer::addId(uint64_t id, const char *videoId)
                 {
                     // TODO: add on_error for handling these
                     std::cerr << "Parsing error; status code: " << status.code << '\n';
+					ctx->on_complete(ctx);
                 }
             };
 
@@ -252,14 +274,56 @@ bool ytplayer::add(uint64_t id, std::string &url)
     return true;
 }
 
+void ytplayer::progress(uint64_t id)
+{
+	if (this->ctx.find(id) == this->ctx.end())
+		return;
+	if (!ctx[id]->queue.empty() && !ctx[id]->chunk_downloading)
+	{
+		if (ctx[id]->queue.front().is_dash)
+		{
+			// we need to use this to execute the call for another chunk in the uv thread
+			auto *h_idle = (uv_idle_t *)malloc(sizeof(uv_idle_t));
+			uv_idle_init(loop, h_idle);
+			h_idle->data = ctx[id];
+			uv_idle_start(h_idle, [](uv_idle_t *handle) {
+				auto p_ctx = (ytctx_t *)handle->data;
+				ytdl_dl_dash_ctx_next_chunk(p_ctx->queue.front().dl_dash);
+				uv_idle_stop(handle);
+				uv_close((uv_handle_t *)handle, [](uv_handle_t *handle) {
+					free(handle);
+				});
+			});
+		}
+		else
+		{
+			auto *h_idle = (uv_idle_t *)malloc(sizeof(uv_idle_t));
+			uv_idle_init(loop, h_idle);
+			h_idle->data = ctx[id];
+			uv_idle_start(h_idle, [](uv_idle_t *handle) {
+				auto p_ctx = (ytctx_t *)handle->data;
+				ytdl_dl_media_ctx_next_chunk(p_ctx->queue.front().dl_chunked);
+				uv_idle_stop(handle);
+				uv_close((uv_handle_t *)handle, [](uv_handle_t *handle) {
+					free(handle);
+				});
+			});
+		}
+		ctx[id]->chunk_downloading = true;
+	}
+}
+
 void ytplayer::stop(uint64_t id)
 {
-	if (this->ctx.find(id) != this->ctx.end())
+	if (this->ctx.find(id) == this->ctx.end())
 		return;
 
 	if (ctx[id]->has_started)
 	{
 		auto &info = ctx[id]->queue.front();
+		ctx[id]->has_started = false;
+		ctx[id]->demuxer.reader = webm::PartialBufferReader();
+		ctx[id]->demuxer.parser.DidSeek();
 		if (info.is_dash)
 			ytdl_dl_dash_shutdown(info.dl_dash, [](ytdl_dl_dash_ctx_t *handle){
 				free(handle);
@@ -296,8 +360,6 @@ void ytplayer::start(uint64_t id) {
 
         if (ctx[id]->queue.empty())
             return;
-
-        auto &fuck = ctx[id]->queue.front();
         
         if (ctx[id]->queue.front().is_dash)
             ytdl_dl_dash_ctx_connect(ctx[id]->queue.front().dl_dash, ctx[id]->queue.front().dash_url.c_str());
@@ -305,6 +367,7 @@ void ytplayer::start(uint64_t id) {
             ytdl_dl_media_ctx_connect(ctx[id]->queue.front().dl_chunked);
 
         ctx[id]->has_started = true;
+		ctx[id]->chunk_downloading = true;
     }
 }
 

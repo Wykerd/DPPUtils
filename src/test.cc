@@ -137,6 +137,11 @@ int main() {
 		}
 	});
 
+	bot.on_voice_buffer_send([&player](const dpp::voice_buffer_send_t &event) {
+		if (event.buffer_size > 1 && event.buffer_size < 100)
+			player.progress(event.voice_client->server_id);
+	});
+
 	bot.on_voice_ready([&vcMap](const dpp::voice_ready_t &event) {
 		vcMap[event.voice_client->server_id] = event.voice_client;
 		vcMap[event.voice_client->server_id]->insert_marker("start");
@@ -144,7 +149,7 @@ int main() {
 
 	bot.on_ready([&bot](const dpp::ready_t &event) {
 		std::cout << "Bot is ready\n";
-
+/*
 		dpp::slashcommand playcommand;
 		playcommand.set_name("play")
 			.set_description("Streams a song to your current voice channel")
@@ -183,7 +188,7 @@ int main() {
 			.set_description("Skip to the next song")
 			.set_application_id(bot.me.id);
 
-		bot.global_bulk_command_create({ playcommand, queuecommand, skipcommand, statscommand });
+		bot.global_bulk_command_create({ playcommand, queuecommand, skipcommand, statscommand }); */
 	});
 
 	bot.on_voice_track_marker([&bot, &player, &channelMap](const dpp::voice_track_marker_t &event) {
@@ -261,7 +266,7 @@ int main() {
 		}
 		for (auto & id : terminated_connections)
 			ctx->vcMap->erase(id);
-	}, 60000, 1);
+	}, 60000, 60000);
 
 	bot.start(true);
 	uv_run(uv_default_loop(), UV_RUN_DEFAULT);
@@ -344,6 +349,24 @@ void queue_command(const dpp::interaction_create_t &event, dpputils::ytplayer &p
 	}
 }
 
+static
+void album_queue(std::string artists, std::vector<std::string> tracks,
+				 dpputils::ytplayer &player, dpp::cluster &bot, id_map_t &channelMap,
+				 uint64_t guild_id, uint64_t user_id, uint64_t channel_id, std::string token) {
+	if (tracks.empty())
+		return;
+	dpputils::get_youtube_results(bot, tracks.front() + " - " + artists,
+	[artists, tracks, guild_id, user_id, channel_id, token, &channelMap, &player, &bot]
+	(const std::vector<std::string> &ids) {
+		std::vector<std::string> n_tracks = tracks;
+		n_tracks.erase(n_tracks.begin());
+		if (!setup_voice(bot, channelMap, guild_id, user_id, channel_id, token))
+			return;
+		player.addId(guild_id, ids.front().c_str());
+		album_queue(artists, n_tracks, player, bot, channelMap, guild_id, user_id, channel_id, token);
+	});
+}
+
 void play_command(const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
 				  id_map_t &channelMap, vc_map_t &vcMap) {
 	dpp::command_interaction cmd_data = std::get<dpp::command_interaction>(event.command.data);
@@ -414,14 +437,35 @@ void play_command(const dpp::interaction_create_t &event, dpputils::ytplayer &pl
 			[&option](const dpp::interaction_create_t &event, dpputils::ytplayer &player, dpp::cluster &bot,
 					  id_map_t &channelMap, vc_map_t &vcMap) {
 				std::string query = std::get<std::string>(option.options.front().value);
-				event.edit_response(
-					dpp::message()
-						.add_embed(
-							dpp::embed()
-								.set_color(0x000000)
-								.set_title("Album")
-								.set_description("Not yet implemented")
-						)
+				auto guild_id = event.command.guild_id;
+				auto channel_id = event.command.channel_id;
+				auto token = event.command.token;
+				auto user_id = event.command.usr.id;
+				dpputils::get_release_info(
+					bot, query,
+					[guild_id, channel_id, user_id, token, &player, &bot, &channelMap]
+					(const dpputils::releaseinfo_t *info) {
+						dpp::embed embed;
+						if (!info->cover_art_url.empty())
+							embed.set_thumbnail(info->cover_art_url);
+						std::string tracklist = "```diff\n";
+						for (auto & it : info->tracks)
+							tracklist += "+ " + it + "\n";
+						tracklist += "```";
+						std::string artistlist;
+						for (auto & it : info->artists)
+							artistlist += it + ", ";
+						artistlist.resize(artistlist.length() - 2);
+						embed
+							.set_title("Album Request")
+							.add_field(info->name, fmt::format("by {}", artistlist))
+							.add_field("Tracklist", tracklist);
+						dpp::message msg;
+						msg.channel_id = channel_id;
+						msg.add_embed(embed);
+						bot.interaction_response_edit(token, msg);
+						album_queue(artistlist, info->tracks, player, bot, channelMap, guild_id, user_id, channel_id, token);
+					}
 				);
 			}
 		}

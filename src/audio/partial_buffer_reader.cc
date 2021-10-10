@@ -70,7 +70,7 @@ namespace webm
         *num_actually_read = 0;
         std::size_t expected = num_to_read;
 
-        std::size_t num_remaining = data_.size() - pos_;
+        std::size_t num_remaining = data_.size();
         if (num_remaining == 0)
         {
             if (this->complete_)
@@ -86,15 +86,19 @@ namespace webm
             num_to_read = static_cast<std::size_t>(num_remaining);
         }
 
-        std::copy_n(data_.data() + pos_, num_to_read, buffer);
+        std::copy_n(data_.data(), num_to_read, buffer);
         *num_actually_read = num_to_read;
         pos_ += num_to_read;
 
         if (*num_actually_read != expected)
         {
+            for (uint64_t i = 0; i < *num_actually_read; ++i)
+                data_.erase(data_.begin());
             return Status(Status::kOkPartial);
         }
 
+        for (uint64_t i = 0; i < *num_actually_read; ++i)
+            data_.erase(data_.begin());
         return Status(Status::kOkCompleted);
     }
 
@@ -107,7 +111,7 @@ namespace webm
         *num_actually_skipped = 0;
         std::uint64_t expected = num_to_skip;
 
-        std::size_t num_remaining = data_.size() - pos_;
+        std::size_t num_remaining = data_.size();
         if (num_remaining == 0)
         {
             if (this->complete_)
@@ -125,6 +129,8 @@ namespace webm
 
         *num_actually_skipped = num_to_skip;
         pos_ += num_to_skip;
+        for (uint64_t i = 0; i < *num_actually_skipped; ++i)
+            data_.erase(data_.begin());
 
         if (*num_actually_skipped != expected)
         {
